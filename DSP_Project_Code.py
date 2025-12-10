@@ -4,9 +4,8 @@ from scipy.signal import iirnotch, filtfilt
 import matplotlib.pyplot as plt
 from scipy.signal import butter, sosfilt
 from scipy.stats import skew, kurtosis
-from sklearn.model_selection import train_test_split
-from sklearn.neighbors import KNeighborsClassifier
-from sklearn.metrics import accuracy_score
+from collections import Counter
+
 
 # Load EEG Data
 mat = sio.loadmat("eeg_data.mat")  
@@ -28,11 +27,39 @@ def process_50Hz(eeg_segment, fs):
     filtered = filtfilt(b, a, eeg_segment)
     return filtered
 
+def window_signal(eeg_segment, window_size_sec=5, overlap=0.0):
+    """
+    Split EEG segment into non-overlapping windows.
+    Parameters:
+        eeg_segment: 1D array
+        window_size_sec: window size in seconds
+        overlap: fraction overlap (0.0 = no overlap)
+    Returns:
+        windows: array of shape (num_windows, window_samples)
+    """
+    window_samples = int(fs * window_size_sec)
+    step = int(window_samples * (1 - overlap))
+    windows = []
+    
+    for start in range(0, len(eeg_segment) - window_samples + 1, step):
+        win = eeg_segment[start:start + window_samples]
+        windows.append(win)
+    
+    return np.array(windows)
+
+# Feature Extraction
+
 def feature_1():
     pass
 
-def feature_2():
-    pass
+def feature_2(eeg_segment):
+    """Compute mean, variance, skewness, kurtosis of raw EEG window"""
+    return [
+        np.mean(eeg_segment),
+        np.var(eeg_segment),
+        skew(eeg_segment),
+        kurtosis(eeg_segment)
+    ]
 
 def feature_3(eeg_segment):
     """
@@ -74,58 +101,127 @@ def feature_5(eeg_segment, fs):
     return features
 
 
-def classify_80_20(data, labels, fs):
+def accuracy(y_true, y_pred):
+    """
+    Compute classification accuracy.
+    y_true: true labels
+    y_pred: predicted labels
+    """
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+    return np.sum(y_true == y_pred) / len(y_true)
+
+
+def train_test_splitting(X, y, test_size=0.2, random_seed=42):
+    np.random.seed(random_seed)
+    
+    classes = np.unique(y)
+    train_indices = []
+    test_indices = []
+    
+    for cls in classes:
+        cls_idx = np.where(y == cls)[0]
+        np.random.shuffle(cls_idx)
+        split = int(len(cls_idx) * (1 - test_size))
+        train_indices.extend(cls_idx[:split])
+        test_indices.extend(cls_idx[split:])
+    
+    X_train = X[train_indices]
+    y_train = y[train_indices]
+    X_test = X[test_indices]
+    y_test = y[test_indices]
+    
+    return X_train, X_test, y_train, y_test
+
+
+def classify_80_20(data, labels, fs, window_size_sec=5):
     """
     Perform 80-20 train/test split and classify using KNN.
-    Compare three representations:
-    1) Time-domain raw EEG
-    2) Derivative stats
-    3) Frequency-band features
+    Compare the five representations
     """
     X_raw = []
+    X_raw_stats = []
+    X_derivative_signal = []
     X_deriv = []
     X_band = []
+    y_all = []
 
-    for segment in data:
+    for i, segment in enumerate(data):
         filtered = process_50Hz(segment, fs)
+        windows = window_signal(filtered, window_size_sec, overlap=0.0)
 
-        # 1) Raw signal
-        X_raw.append(filtered)
-
-        # 2) Derivative stats
-        X_deriv.append(feature_4(filtered))
-
-        # 3) Frequency-band features
-        X_band.append(feature_5(filtered, fs))
+        for win in windows:
+            # 1) Raw EEG samples
+            X_raw.append(win)
+            # 2) Raw EEG statistical features
+            X_raw_stats.append(feature_2(win))
+            # 3) First-order derivative (temporal difference)
+            X_derivative_signal.append(feature_3(win))
+            # 4) Derivative statistics
+            X_deriv.append(feature_4(win))
+            # 5) Frequency-band features
+            X_band.append(feature_5(win, fs))
+            # Label for this window
+            y_all.append(labels[i])
 
     # Convert to arrays
     X_raw = np.array(X_raw)
+    X_raw_stats = np.array(X_raw_stats)
+    X_derivative_signal = np.array(X_derivative_signal)
     X_deriv = np.array(X_deriv)
     X_band = np.array(X_band)
-    y = np.array(labels)
+    y_all = np.array(y_all)
 
     representations = {
         "Raw EEG": X_raw,
+        "Raw EEG Stats": X_raw_stats,
+        "Derivative signal": X_derivative_signal,
         "Derivative stats": X_deriv,
         "Frequency-band features": X_band
     }
 
     for name, X in representations.items():
         print(f"\nClassification using {name}:")
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y, test_size=0.2, random_state=42, stratify=y
-        )
+        X_train, X_test, y_train, y_test = train_test_splitting(X, y_all, test_size=0.2)
 
+        acc_list = []
         for k in range(1, 11):
-            knn = KNeighborsClassifier(n_neighbors=k)
-            knn.fit(X_train, y_train)
-            y_pred = knn.predict(X_test)
-            acc = accuracy_score(y_test, y_pred)
+            y_pred = classify_KNN(X_train, y_train, X_test, k)
+            acc = accuracy(y_test, y_pred)
+            acc_list.append(acc)
             print(f"K={k}, Accuracy={acc:.3f}")
 
+        # Plot Accuracy vs K
+        plt.figure()
+        plt.plot(range(1, 11), acc_list, marker='o')
+        plt.title(f"KNN Accuracy vs K ({name})")
+        plt.xlabel("K")
+        plt.ylabel("Accuracy")
+        plt.xticks(range(1, 11))
+        plt.grid(True)
+        plt.show()
 
-def classify_KNN():
-    pass
+        # Print best K and accuracy
+        best_k = np.argmax(acc_list) + 1  # +1 because K=1..10
+        best_acc = acc_list[best_k-1]
+        print(f"Best K for {name}: {best_k} with Accuracy = {best_acc:.3f}")
+
+
+def classify_KNN(X_train, y_train, X_test, K):
+    y_pred = []
+    for x in X_test:
+        # Compute Euclidean distances to all training samples
+        distances = np.linalg.norm(X_train - x, axis=1)
+        # Get indices of K nearest neighbors
+        nn_idx = np.argsort(distances)[:K]
+        # Get labels of nearest neighbors
+        nn_labels = y_train[nn_idx]
+        # Majority vote
+        most_common = Counter(nn_labels).most_common(1)[0][0]
+        y_pred.append(most_common)
+    return np.array(y_pred)
+
+
 def plot_average_spectrum(data, labels, fs):
     """
     Plot the average spectrum for each class.
@@ -191,6 +287,10 @@ def main():
     # Apply 50 Hz notch filter 
     first_segment_filtered = process_50Hz(first_segment_raw, fs)
 
+
+    # Feature 2: Time domain stats
+    feat2 = feature_2(first_segment_filtered)
+
     # Feature 3: First-order difference 
     feat3 = feature_3(first_segment_filtered)
 
@@ -201,9 +301,12 @@ def main():
     feat5 = feature_5(first_segment_filtered, fs)
 
    
-    print("Feature 3 (Derivative) length:", len(feat3))
-    print("Feature 4 (Derivative stats):", feat4)
-    print("Feature 5 (Frequency band features) length:", len(feat5))
+
+    #print("Feature 1 (raw) length:", len(first_segment_raw))
+    #print("Feature 2 (raw) stats length:", len(feat2))
+    #print("Feature 3 (Derivative) length:", len(feat3))
+    #print("Feature 4 (Derivative stats):", feat4)
+    #print("Feature 5 (Frequency band features) length:", len(feat5))
 
     # Plot raw vs filtered EEG segment 
     t = np.arange(0, first_segment_raw.size) / fs  
@@ -229,7 +332,14 @@ def main():
     inspect_data(data, labels, fs, num_segments=3)
 
     # Run 80-20 classification 
-    classify_80_20(data, labels, fs)
+    print("Classification for window size = 5\n")
+    classify_80_20(data, labels, fs, window_size_sec=5)
+    print("Classification for window size = 10\n")
+    classify_80_20(data, labels, fs, window_size_sec=10)
+    print("Classification for window size = 15\n")
+    classify_80_20(data, labels, fs, window_size_sec=15)
+    print("Classification for window size = 20\n")
+    classify_80_20(data, labels, fs, window_size_sec=20)
 
 if __name__ == "__main__":
     main()
