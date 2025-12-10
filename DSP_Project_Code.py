@@ -186,7 +186,7 @@ def classify_80_20(data, labels, fs, window_size_sec=5):
 
         acc_list = []
         for k in range(1, 11):
-            y_pred = classify_KNN(X_train, y_train, X_test, k)
+            y_pred = classify_classify_KNN(X_train, y_train, X_test, k)
             acc = accuracy(y_test, y_pred)
             acc_list.append(acc)
             print(f"K={k}, Accuracy={acc:.3f}")
@@ -281,9 +281,13 @@ def inspect_data(data, labels, fs, num_segments=3):
         plt.show()
 
 def main():
-    # Take the first EEG segment 
+    # First EEG segment 
     first_segment_raw = data[0, :]
-
+    print("\nData amplitude ranges per class:")
+    for cls in [0, 1, 2]:
+        class_data = data[labels == cls]
+        print(f"Class {cls}: min={class_data.min():.2f}, max={class_data.max():.2f}, std={class_data.std():.2f}")
+   
     # Apply 50 Hz notch filter 
     first_segment_filtered = process_50Hz(first_segment_raw, fs)
 
@@ -303,6 +307,8 @@ def main():
    
 
     #print("Feature 1 (raw) length:", len(first_segment_raw))
+    
+
     #print("Feature 2 (raw) stats length:", len(feat2))
     #print("Feature 3 (Derivative) length:", len(feat3))
     #print("Feature 4 (Derivative stats):", feat4)
